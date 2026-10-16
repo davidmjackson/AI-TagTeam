@@ -14,11 +14,11 @@ export class Store {
   async save(state: DebateState): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     await writeFile(join(this.dir, '..', '.gitignore'), '*\n');
-    await writeFile(this.path(state.id), `${JSON.stringify(state, null, 2)}\n`);
+    await writeFile(this.statePath(state.id), `${JSON.stringify(state, null, 2)}\n`);
   }
 
   async load(id: string): Promise<DebateState> {
-    const file = this.path(id);
+    const file = this.statePath(id);
     let text: string;
     try {
       text = await readFile(file, 'utf8');
@@ -33,13 +33,13 @@ export class Store {
   }
 
   async exists(id: string): Promise<boolean> {
-    return access(this.path(id)).then(
+    return access(this.statePath(id)).then(
       () => true,
       () => false,
     );
   }
 
-  private path(id: string): string {
+  statePath(id: string): string {
     assertValidId(id);
     return join(this.dir, `${id}.json`);
   }

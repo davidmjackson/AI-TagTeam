@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexError } from '../src/codex/errors.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { Referee } from '../src/referee.js';
@@ -184,30 +184,46 @@ describe('later-round stalls', () => {
   });
 });
 
+async function startHung(topic: string) {
+  const dir = await mkdtemp(join(tmpdir(), 'tagteam-hung-'));
+  const hung = new FakeRunner([]);
+  hung.start = () => new Promise(() => undefined);
+  const store = new Store(dir);
+  const config = DEFAULT_CONFIG;
+  const first = new Referee({
+    runner: hung,
+    store,
+    transcript: new Transcript(dir),
+    config,
+    now: () => NOW,
+  });
+  void first.open({ topic, claudePosition: 'Position.' });
+  const id = `2026-10-16-${topic.toLowerCase().replace(/\W+/g, '-')}`;
+  for (let i = 0; i < 100 && !(await store.exists(id)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return { dir, id, store };
+}
+
 describe('crash consistency', () => {
   it('recovers an interrupted call through retry', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'tagteam-crash-'));
-    const hung = new FakeRunner([]);
-    hung.start = () => new Promise(() => undefined);
-    const store = new Store(dir);
-    const dead = new Referee({
-      runner: hung,
+    const { dir, id, store } = await startHung('Crash recovery');
+    vi.resetModules();
+    const restarted = await import('../src/referee.js');
+    const runner = new FakeRunner([agree('S')]);
+    const config = DEFAULT_CONFIG;
+    const referee = new restarted.Referee({
+      runner,
       store,
       transcript: new Transcript(dir),
-      config: DEFAULT_CONFIG,
-      now: () => NOW,
+      config,
     });
-    void dead.open(open);
-    const id = '2026-10-16-use-tabs';
-    for (let i = 0; i < 100 && !(await store.exists(id)); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    const fresh = await setup([agree('S')], dir);
-    expect(await fresh.referee.status(id)).toMatchObject({ status: 'stalled', round: 0 });
-    const retried = await fresh.referee.retry(id);
+    expect(await referee.status(id)).toMatchObject({ status: 'stalled', round: 0 });
+    const retried = await referee.retry(id);
     expect(retried).toMatchObject({ status: 'agreed', round: 1 });
-    expect(fresh.runner.calls[0]?.prompt).toContain('Use tabs?');
-    expect((await fresh.read(retried.transcriptPath)).match(/— Claude/g)).toHaveLength(1);
+    expect(runner.calls[0]?.prompt).toContain('Crash recovery');
+    const transcript = await readFile(join(dir, retried.transcriptPath), 'utf8');
+    expect(transcript.match(/— Claude/g)).toHaveLength(1);
   });
 });
 
@@ -236,5 +252,22 @@ describe('pinned round limit', () => {
     await later.reply(id, 'r2');
     const last = await later.reply(id, 'r3');
     expect(last).toMatchObject({ status: 'escalated', round: 3, maxRounds: 3 });
+  });
+});
+
+describe('in-flight turns', () => {
+  it('refuses a retry while the turn is still running', async () => {
+    const { dir, id } = await startHung('Retry guard');
+    const second = await setup([agree('S')], dir);
+    await expect(second.referee.retry(id)).rejects.toThrow(/still working/);
+    expect(second.runner.calls).toHaveLength(0);
+  });
+
+  it('does not tell Claude to retry while the turn is running', async () => {
+    const { dir, id } = await startHung('Status guard');
+    const second = await setup([], dir);
+    const result = await second.referee.status(id);
+    expect(result.error).toContain('still working');
+    expect(result.error).not.toContain('debate_retry');
   });
 });

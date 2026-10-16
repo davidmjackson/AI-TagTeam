@@ -2,7 +2,7 @@ import { AUTH_HINT, CodexError } from './codex/errors.js';
 import type { CodexReply, CodexRunner } from './codex/runner.js';
 import { dayStamp, slugify, uniqueId } from './ids.js';
 import { followUpPrompt, openingPrompt } from './prompts.js';
-import { assertAllowed, nextStatus } from './rules.js';
+import { RefereeError, assertAllowed, nextStatus } from './rules.js';
 import type { Store } from './store.js';
 import {
   type Transcript,
@@ -30,6 +30,8 @@ export interface OpenInput {
   claudePosition: string;
   files?: string[];
 }
+
+const inFlight = new Set<string>();
 
 const AWAITING =
   'Awaiting ChatGPT. If this persists, the referee was interrupted: call debate_retry.';
@@ -97,6 +99,8 @@ export class Referee {
   async retry(id: string): Promise<TurnResult> {
     const state = await this.deps.store.load(id);
     assertAllowed('retry', state.status);
+    if (inFlight.has(this.flightKey(id)))
+      throw new RefereeError('ChatGPT is still working on this turn; wait for it to finish.');
     await this.deps.transcript.append(id, renderNote('Retrying the failed ChatGPT turn.'));
     return this.exchange(state, state.pendingPrompt ?? '');
   }
@@ -111,7 +115,14 @@ export class Referee {
   }
 
   async status(id: string): Promise<TurnResult> {
-    return this.result(await this.deps.store.load(id));
+    const result = this.result(await this.deps.store.load(id));
+    return inFlight.has(this.flightKey(id))
+      ? { ...result, error: 'ChatGPT is still working on this turn.' }
+      : result;
+  }
+
+  private flightKey(id: string): string {
+    return this.deps.store.statePath(id);
   }
 
   private async claudeTurn(
@@ -131,6 +142,8 @@ export class Referee {
     let reply: CodexReply;
     Object.assign(state, { status: 'stalled', pendingPrompt: prompt, lastError: AWAITING });
     await this.deps.store.save(state);
+    const key = this.flightKey(state.id);
+    inFlight.add(key);
     try {
       reply =
         state.threadId === null
@@ -138,6 +151,8 @@ export class Referee {
           : await this.deps.runner.resume(state.threadId, prompt);
     } catch (err) {
       return this.stall(state, prompt, err);
+    } finally {
+      inFlight.delete(key);
     }
     return this.record(state, reply);
   }

@@ -76,6 +76,7 @@ export class Referee {
       async (candidate) =>
         (await this.deps.store.exists(candidate)) || (await this.deps.transcript.exists(candidate)),
     );
+    const key = this.claim(id);
     const { maxRounds } = this.deps.config;
     const state = newState({
       id,
@@ -84,7 +85,9 @@ export class Referee {
       transcriptPath: this.deps.transcript.pathFor(id),
       maxRounds,
     });
-    await this.deps.transcript.append(id, renderHeader(state, this.deps.config));
+    await this.guard(key, () =>
+      this.deps.transcript.append(id, renderHeader(state, this.deps.config)),
+    );
     const prompt = openingPrompt({ ...input, files: input.files ?? [] }, maxRounds);
     return this.claudeTurn(state, input.claudePosition, prompt);
   }
@@ -92,6 +95,7 @@ export class Referee {
   async reply(id: string, response: string): Promise<TurnResult> {
     const state = await this.deps.store.load(id);
     assertAllowed('reply', state.status);
+    this.claim(id);
     const prompt = followUpPrompt(response, state.round + 1, state.maxRounds);
     return this.claudeTurn(state, response, prompt);
   }
@@ -99,9 +103,10 @@ export class Referee {
   async retry(id: string): Promise<TurnResult> {
     const state = await this.deps.store.load(id);
     assertAllowed('retry', state.status);
-    if (inFlight.has(this.flightKey(id)))
-      throw new RefereeError('ChatGPT is still working on this turn; wait for it to finish.');
-    await this.deps.transcript.append(id, renderNote('Retrying the failed ChatGPT turn.'));
+    const key = this.claim(id);
+    await this.guard(key, () =>
+      this.deps.transcript.append(id, renderNote('Retrying the failed ChatGPT turn.')),
+    );
     return this.exchange(state, state.pendingPrompt ?? '');
   }
 
@@ -123,36 +128,59 @@ export class Referee {
     return this.deps.store.statePath(id);
   }
 
+  private claim(id: string): string {
+    const key = this.flightKey(id);
+    if (inFlight.has(key))
+      throw new RefereeError('ChatGPT is still working on this turn; wait for it to finish.');
+    inFlight.add(key);
+    return key;
+  }
+
+  private async guard(key: string, work: () => Promise<void>): Promise<void> {
+    try {
+      await work();
+    } catch (err) {
+      inFlight.delete(key);
+      throw err;
+    }
+  }
+
   private async claudeTurn(
     state: DebateState,
     message: string,
     prompt: string,
   ): Promise<TurnResult> {
     state.lastClaude = message;
-    await this.deps.transcript.append(
-      state.id,
-      renderClaude(state.round + 1, state.maxRounds, message),
+    await this.guard(this.flightKey(state.id), () =>
+      this.deps.transcript.append(
+        state.id,
+        renderClaude(state.round + 1, state.maxRounds, message),
+      ),
     );
     return this.exchange(state, prompt);
   }
 
   private async exchange(state: DebateState, prompt: string): Promise<TurnResult> {
-    let reply: CodexReply;
-    Object.assign(state, { status: 'stalled', pendingPrompt: prompt, lastError: AWAITING });
-    await this.deps.store.save(state);
     const key = this.flightKey(state.id);
-    inFlight.add(key);
+    let reply: CodexReply;
     try {
-      reply =
-        state.threadId === null
-          ? await this.deps.runner.start(prompt)
-          : await this.deps.runner.resume(state.threadId, prompt);
-    } catch (err) {
-      return this.stall(state, prompt, err);
+      Object.assign(state, { status: 'stalled', pendingPrompt: prompt, lastError: AWAITING });
+      await this.deps.store.save(state);
+      try {
+        reply = await this.run(state, prompt);
+      } catch (err) {
+        return await this.stall(state, prompt, err);
+      }
     } finally {
       inFlight.delete(key);
     }
     return this.record(state, reply);
+  }
+
+  private run(state: DebateState, prompt: string): Promise<CodexReply> {
+    return state.threadId === null
+      ? this.deps.runner.start(prompt)
+      : this.deps.runner.resume(state.threadId, prompt);
   }
 
   private async record(state: DebateState, reply: CodexReply): Promise<TurnResult> {

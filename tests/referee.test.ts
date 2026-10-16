@@ -270,4 +270,18 @@ describe('in-flight turns', () => {
     expect(result.error).toContain('still working');
     expect(result.error).not.toContain('debate_retry');
   });
+
+  it('lets only one of two concurrent replies through', async () => {
+    const { referee, runner, read } = await setup([object('Why?'), object('Still no.')]);
+    const { id, transcriptPath } = await referee.open(open);
+    const outcomes = await Promise.allSettled([
+      referee.reply(id, 'Because access.'),
+      referee.reply(id, 'Because access.'),
+    ]);
+    expect(runner.calls).toHaveLength(2);
+    expect(outcomes.filter((o) => o.status === 'rejected')).toHaveLength(1);
+    const rejected = outcomes.find((o) => o.status === 'rejected');
+    expect(rejected).toMatchObject({ reason: expect.any(RefereeError) });
+    expect((await read(transcriptPath)).match(/Round 2\/\d+ — Claude/g)).toHaveLength(1);
+  });
 });

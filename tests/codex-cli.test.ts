@@ -60,6 +60,16 @@ describe('CodexCli', () => {
   });
 });
 
+describe('CodexCli error events', () => {
+  it('classifies an auth failure reported only as an error event', async () => {
+    process.env.FAKE_CODEX_MODE = 'error-event';
+    await expect(new CodexCli(options()).start('x')).rejects.toMatchObject({
+      kind: 'auth',
+      message: 'unauthorized (401)',
+    });
+  });
+});
+
 describe('CodexCli failures', () => {
   it('classifies an auth failure', async () => {
     process.env.FAKE_CODEX_MODE = 'auth';

@@ -15,12 +15,27 @@ describe('parseEvents', () => {
       line({ type: 'item.completed', item: { type: 'agent_message', text: 'final' } }),
       '',
     ].join('\n');
-    expect(parseEvents(stdout)).toEqual({ threadId: 't-1', text: 'final', failure: null });
+    expect(parseEvents(stdout)).toEqual({
+      threadId: 't-1',
+      text: 'final',
+      failure: null,
+      lastError: 'Reconnecting... 1/5',
+    });
   });
 
   it('reports a failed turn', () => {
     const stdout = line({ type: 'turn.failed', error: { message: 'usage limit reached' } });
     expect(parseEvents(stdout).failure).toBe('usage limit reached');
+  });
+});
+
+describe('parseEvents lastError', () => {
+  it('keeps the last top-level error message', () => {
+    const stdout = [
+      line({ type: 'error', message: 'first' }),
+      line({ type: 'error', message: 'unauthorized (401)' }),
+    ].join('\n');
+    expect(parseEvents(stdout).lastError).toBe('unauthorized (401)');
   });
 });
 

@@ -11,15 +11,7 @@ process.stdin.on('data', (chunk) => {
   input += chunk;
 });
 
-process.stdin.on('end', () => {
-  if (mode === 'hang') {
-    spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'inherit' });
-    setTimeout(() => {}, 60_000);
-    return;
-  }
-  process.stdout.write('warning: not json\n');
-  emit({ type: 'error', message: 'Reconnecting... 1/5' });
-  emit({ type: 'thread.started', thread_id: 'thread-123' });
+function failIfRequested() {
   if (mode === 'auth') {
     emit({
       type: 'turn.failed',
@@ -35,6 +27,22 @@ process.stdin.on('end', () => {
     emit({ type: 'item.completed', item: { type: 'agent_message', text: '' } });
     process.exit(0);
   }
+}
+
+process.stdin.on('end', () => {
+  if (mode === 'hang') {
+    spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'inherit' });
+    setTimeout(() => {}, 60_000);
+    return;
+  }
+  if (mode === 'error-event') {
+    emit({ type: 'error', message: 'unauthorized (401)' });
+    process.exit(1);
+  }
+  process.stdout.write('warning: not json\n');
+  emit({ type: 'error', message: 'Reconnecting... 1/5' });
+  emit({ type: 'thread.started', thread_id: 'thread-123' });
+  failIfRequested();
   const echo = JSON.stringify({ argv: process.argv.slice(2), stdin: input });
   emit({ type: 'item.completed', item: { type: 'agent_message', text: echo } });
   emit({ type: 'turn.completed' });

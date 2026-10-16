@@ -80,12 +80,15 @@ function runProcess(opts: CodexCliOptions, args: string[], input: string): Promi
   });
 }
 
+function exitDetail(result: ProcessResult, lastError: string | null): string | null {
+  if (result.code === 0) return null;
+  return result.stderr.trim() || lastError || `codex exited with code ${result.code}`;
+}
+
 function toReply(result: ProcessResult, timeoutMs: number, knownThread: string | null): CodexReply {
   if (result.timedOut) throw new CodexError(`codex timed out after ${timeoutMs} ms`, 'timeout');
   const run = parseEvents(result.stdout);
-  const exitDetail =
-    result.code === 0 ? null : result.stderr.trim() || `codex exited with code ${result.code}`;
-  const detail = run.failure ?? exitDetail;
+  const detail = run.failure ?? exitDetail(result, run.lastError);
   if (detail !== null) throw new CodexError(detail, classify(`${detail}\n${result.stderr}`));
   const threadId = run.threadId ?? knownThread;
   if (threadId === null || run.text === null || run.text.trim() === '')

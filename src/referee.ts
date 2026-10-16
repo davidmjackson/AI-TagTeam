@@ -1,0 +1,173 @@
+import { AUTH_HINT, CodexError } from './codex/errors.js';
+import type { CodexReply, CodexRunner } from './codex/runner.js';
+import { dayStamp, slugify, uniqueId } from './ids.js';
+import { followUpPrompt, openingPrompt } from './prompts.js';
+import { assertAllowed, nextStatus } from './rules.js';
+import type { Store } from './store.js';
+import {
+  type Transcript,
+  renderAgreed,
+  renderChatGpt,
+  renderClaude,
+  renderEscalated,
+  renderHeader,
+  renderNote,
+  renderRuling,
+} from './transcript.js';
+import type { DebateState, TagteamConfig, TurnResult } from './types.js';
+import { parseReply, spoken } from './verdict.js';
+
+export interface RefereeDeps {
+  runner: CodexRunner;
+  store: Store;
+  transcript: Transcript;
+  config: TagteamConfig;
+  now?: () => Date;
+}
+
+export interface OpenInput {
+  topic: string;
+  claudePosition: string;
+  files?: string[];
+}
+
+function newState(id: string, topic: string, createdAt: Date, transcriptPath: string): DebateState {
+  return {
+    id,
+    topic,
+    createdAt: createdAt.toISOString(),
+    transcriptPath,
+    threadId: null,
+    round: 0,
+    status: 'open',
+    lastVerdict: null,
+    lastClaude: '',
+    lastChatGpt: '',
+    agreedSolution: '',
+    pendingPrompt: null,
+    lastError: null,
+  };
+}
+
+function describeFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return err instanceof CodexError && err.kind === 'auth' ? `${message} ${AUTH_HINT}` : message;
+}
+
+export class Referee {
+  constructor(private readonly deps: RefereeDeps) {}
+
+  async open(input: OpenInput): Promise<TurnResult> {
+    const now = (this.deps.now ?? (() => new Date()))();
+    const base = `${dayStamp(now)}-${slugify(input.topic)}`;
+    const id = await uniqueId(base, (candidate) => this.deps.store.exists(candidate));
+    const state = newState(id, input.topic, now, this.deps.transcript.pathFor(id));
+    await this.deps.transcript.append(id, renderHeader(state, this.deps.config));
+    const prompt = openingPrompt(
+      { ...input, files: input.files ?? [] },
+      this.deps.config.maxRounds,
+    );
+    return this.claudeTurn(state, input.claudePosition, prompt);
+  }
+
+  async reply(id: string, response: string): Promise<TurnResult> {
+    const state = await this.deps.store.load(id);
+    assertAllowed('reply', state.status);
+    const prompt = followUpPrompt(response, state.round + 1, this.deps.config.maxRounds);
+    return this.claudeTurn(state, response, prompt);
+  }
+
+  async retry(id: string): Promise<TurnResult> {
+    const state = await this.deps.store.load(id);
+    assertAllowed('retry', state.status);
+    await this.deps.transcript.append(id, renderNote('Retrying the failed ChatGPT turn.'));
+    return this.exchange(state, state.pendingPrompt ?? '');
+  }
+
+  async recordRuling(id: string, ruling: string): Promise<TurnResult> {
+    const state = await this.deps.store.load(id);
+    assertAllowed('ruling', state.status);
+    state.status = 'ruled';
+    await this.deps.transcript.append(id, renderRuling(ruling));
+    await this.deps.store.save(state);
+    return this.result(state);
+  }
+
+  async status(id: string): Promise<TurnResult> {
+    return this.result(await this.deps.store.load(id));
+  }
+
+  private async claudeTurn(
+    state: DebateState,
+    message: string,
+    prompt: string,
+  ): Promise<TurnResult> {
+    state.lastClaude = message;
+    await this.deps.transcript.append(
+      state.id,
+      renderClaude(state.round + 1, this.deps.config.maxRounds, message),
+    );
+    return this.exchange(state, prompt);
+  }
+
+  private async exchange(state: DebateState, prompt: string): Promise<TurnResult> {
+    let reply: CodexReply;
+    try {
+      reply =
+        state.threadId === null
+          ? await this.deps.runner.start(prompt)
+          : await this.deps.runner.resume(state.threadId, prompt);
+    } catch (err) {
+      return this.stall(state, prompt, err);
+    }
+    return this.record(state, reply);
+  }
+
+  private async record(state: DebateState, reply: CodexReply): Promise<TurnResult> {
+    const turn = parseReply(reply.text);
+    const round = state.round + 1;
+    const { maxRounds } = this.deps.config;
+    Object.assign(state, {
+      threadId: reply.threadId,
+      round,
+      lastVerdict: turn.verdict,
+      lastChatGpt: spoken(turn),
+      agreedSolution: turn.agreedSolution,
+      pendingPrompt: null,
+      lastError: null,
+      status: nextStatus(turn.verdict, round, maxRounds),
+    });
+    await this.deps.transcript.append(state.id, renderChatGpt(round, maxRounds, turn));
+    if (state.status === 'agreed')
+      await this.deps.transcript.append(state.id, renderAgreed(turn.agreedSolution));
+    if (state.status === 'escalated')
+      await this.deps.transcript.append(state.id, renderEscalated(state));
+    await this.deps.store.save(state);
+    return this.result(state);
+  }
+
+  private async stall(state: DebateState, prompt: string, err: unknown): Promise<TurnResult> {
+    const message = describeFailure(err);
+    Object.assign(state, { status: 'stalled', pendingPrompt: prompt, lastError: message });
+    await this.deps.transcript.append(
+      state.id,
+      renderNote(`ChatGPT turn failed; round not counted. ${message}`),
+    );
+    await this.deps.store.save(state);
+    return this.result(state);
+  }
+
+  private result(state: DebateState): TurnResult {
+    return {
+      id: state.id,
+      status: state.status,
+      round: state.round,
+      maxRounds: this.deps.config.maxRounds,
+      verdict: state.lastVerdict,
+      chatgpt: state.lastChatGpt,
+      agreedSolution: state.agreedSolution,
+      transcriptPath: state.transcriptPath,
+      error: state.lastError,
+    };
+  }
+}

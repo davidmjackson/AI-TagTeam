@@ -2,7 +2,7 @@ import { AUTH_HINT, CodexError } from './codex/errors.js';
 import type { CodexReply, CodexRunner } from './codex/runner.js';
 import { dayStamp, slugify, uniqueId } from './ids.js';
 import { followUpPrompt, openingPrompt } from './prompts.js';
-import { RefereeError, assertAllowed, nextStatus } from './rules.js';
+import { RefereeError, STILL_WORKING, assertAllowed, nextStatus } from './rules.js';
 import type { Store } from './store.js';
 import {
   type Transcript,
@@ -116,9 +116,7 @@ export class Referee {
 
   async status(id: string): Promise<TurnResult> {
     const result = this.result(await this.deps.store.load(id));
-    return inFlight.has(this.flightKey(id))
-      ? { ...result, error: 'ChatGPT is still working on this turn.' }
-      : result;
+    return inFlight.has(this.flightKey(id)) ? { ...result, error: STILL_WORKING } : result;
   }
 
   private flightKey(id: string): string {

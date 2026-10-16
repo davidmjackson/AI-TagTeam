@@ -2,6 +2,8 @@ import type { DebateStatus, Verdict } from './types.js';
 
 export class RefereeError extends Error {}
 
+export const STILL_WORKING = 'ChatGPT is still working on this turn.';
+
 type Action = 'reply' | 'retry' | 'ruling';
 
 const REQUIRED_STATUS: Record<Action, DebateStatus> = {

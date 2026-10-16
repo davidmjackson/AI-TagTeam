@@ -10,8 +10,8 @@ independent reviewer with equal standing. Claude cannot overrule it; only David 
   <stage>". Give ChatGPT the commit range, the files touched and what the stage
   was for, and ask it to check correctness, auth and access control, input
   handling, injection, secrets, and error paths. Your position is that the
-  stage is ready; any defect ChatGPT names is an objection you must fix or
-  rebut, never skip.
+  stage is ready; any defect ChatGPT names is an objection you must answer:
+  fix it once you agree it is a defect, or rebut it. Never skip one.
 - Engage ChatGPT's strongest point. Concede when you are wrong.
 - Never report ChatGPT's argument to David in a weaker form than it was made.
   The transcript in `docs/debates/` is the record.

@@ -4,5 +4,12 @@
   "minTokens": 50,
   "gitignore": true,
   "reporters": ["console"],
-  "ignore": ["**/node_modules/**", "**/coverage/**", "**/dist/**", "**/vendor/**", "docs/**"]
+  "ignore": [
+    "**/node_modules/**",
+    "**/coverage/**",
+    "**/dist/**",
+    "**/vendor/**",
+    "docs/**",
+    "**/.superpowers/**"
+  ]
 }

@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": { "type": "string", "enum": ["AGREE", "OBJECT"] },
+    "argument": { "type": "string" },
+    "agreed_solution": { "type": "string" }
+  },
+  "required": ["verdict", "argument", "agreed_solution"],
+  "additionalProperties": false
+}

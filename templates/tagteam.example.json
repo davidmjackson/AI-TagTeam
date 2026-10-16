@@ -3,7 +3,8 @@
   "checkpoints": [
     "design-final: before a design or spec is finalised",
     "major-refactor: before restructuring more than one module",
-    "test-failure-diagnosis: before acting on a diagnosed test failure"
+    "test-failure-diagnosis: before acting on a diagnosed test failure",
+    "stage-review: after each development stage, a code review and security audit of the stage's diff"
   ],
   "maxRounds": 3,
   "timeoutMs": 300000

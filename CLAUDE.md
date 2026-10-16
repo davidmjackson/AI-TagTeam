@@ -17,11 +17,8 @@ Design: `docs/superpowers/specs/2026-10-16-ai-tagteam-design.md`.
 This file governs all code written in this repository, including code you write.
 Read it before making changes.
 
-This file and the thresholds govern *how* code is written. That one governs *how
-much* gets written, which is the failure the gates cannot catch: Sprintboard
-shipped good code, and roughly 30 percent of its artefacts were never asked for.
-It holds the stop-condition rule, four questions to answer before designing
-anything, and the signals that scope has already gone.
+This file and the thresholds govern *how* code is written. *How much* gets
+written is bounded by the stop condition at the top of this file.
 
 ## Definition of Done
 

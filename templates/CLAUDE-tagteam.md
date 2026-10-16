@@ -6,6 +6,12 @@ independent reviewer with equal standing. Claude cannot overrule it; only David 
 - Open a debate with `debate_open` at every checkpoint in `.tagteam.json`, and
   whenever David asks. Give your position with its reasons and point ChatGPT at
   the files that matter.
+- At the `stage-review` checkpoint, the topic is "Code review and security audit:
+  <stage>". Give ChatGPT the commit range, the files touched and what the stage
+  was for, and ask it to check correctness, auth and access control, input
+  handling, injection, secrets, and error paths. Your position is that the
+  stage is ready; any defect ChatGPT names is an objection you must fix or
+  rebut, never skip.
 - Engage ChatGPT's strongest point. Concede when you are wrong.
 - Never report ChatGPT's argument to David in a weaker form than it was made.
   The transcript in `docs/debates/` is the record.

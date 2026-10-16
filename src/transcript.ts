@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { access, appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { assertValidId } from './ids.js';
 import type { ChatGptTurn, DebateState, TagteamConfig } from './types.js';
@@ -15,6 +15,13 @@ export class Transcript {
     const file = join(this.root, this.pathFor(id));
     await mkdir(dirname(file), { recursive: true });
     await appendFile(file, text, 'utf8');
+  }
+
+  async exists(id: string): Promise<boolean> {
+    return access(join(this.root, this.pathFor(id))).then(
+      () => true,
+      () => false,
+    );
   }
 }
 

@@ -25,6 +25,13 @@ describe('Transcript', () => {
     expect(await readFile(join(root, 'docs', 'debates', 'd-1.md'), 'utf8')).toBe('one\ntwo\n');
   });
 
+  it('reports whether a transcript exists', async () => {
+    const transcript = new Transcript(await mkdtemp(join(tmpdir(), 'tagteam-transcript-')));
+    expect(await transcript.exists('d-1')).toBe(false);
+    await transcript.append('d-1', 'x');
+    expect(await transcript.exists('d-1')).toBe(true);
+  });
+
   it('rejects path-like ids', async () => {
     const transcript = new Transcript(await mkdtemp(join(tmpdir(), 'tagteam-transcript-')));
     await expect(transcript.append('../x', 'y')).rejects.toThrow(RefereeError);

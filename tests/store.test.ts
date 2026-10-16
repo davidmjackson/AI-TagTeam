@@ -13,6 +13,7 @@ const state = (id: string): DebateState => ({
   transcriptPath: `docs/debates/${id}.md`,
   threadId: null,
   round: 0,
+  maxRounds: 3,
   status: 'open',
   lastVerdict: null,
   lastClaude: '',

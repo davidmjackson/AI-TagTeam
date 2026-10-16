@@ -17,6 +17,7 @@ export interface DebateState {
   transcriptPath: string;
   threadId: string | null;
   round: number;
+  maxRounds: number;
   status: DebateStatus;
   lastVerdict: Verdict | null;
   lastClaude: string;

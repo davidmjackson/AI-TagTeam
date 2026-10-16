@@ -168,3 +168,73 @@ describe('persistence', () => {
     expect(runner.calls).toHaveLength(1);
   });
 });
+
+describe('later-round stalls', () => {
+  it('retries the same resume prompt and counts one round', async () => {
+    const failure = new CodexError('timed out', 'timeout');
+    const { referee, runner, read } = await setup([object('A'), failure, agree('S')]);
+    const { id } = await referee.open(open);
+    const stalled = await referee.reply(id, 'Counter');
+    expect(stalled).toMatchObject({ status: 'stalled', round: 1 });
+    const retried = await referee.retry(id);
+    expect(retried).toMatchObject({ status: 'agreed', round: 2 });
+    expect(runner.calls[2]).toMatchObject({ kind: 'resume', threadId: 'thread-1' });
+    expect(runner.calls[2]?.prompt).toBe(runner.calls[1]?.prompt);
+    expect((await read(retried.transcriptPath)).match(/— Claude/g)).toHaveLength(2);
+  });
+});
+
+describe('crash consistency', () => {
+  it('recovers an interrupted call through retry', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tagteam-crash-'));
+    const hung = new FakeRunner([]);
+    hung.start = () => new Promise(() => undefined);
+    const store = new Store(dir);
+    const dead = new Referee({
+      runner: hung,
+      store,
+      transcript: new Transcript(dir),
+      config: DEFAULT_CONFIG,
+      now: () => NOW,
+    });
+    void dead.open(open);
+    const id = '2026-10-16-use-tabs';
+    for (let i = 0; i < 100 && !(await store.exists(id)); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const fresh = await setup([agree('S')], dir);
+    expect(await fresh.referee.status(id)).toMatchObject({ status: 'stalled', round: 0 });
+    const retried = await fresh.referee.retry(id);
+    expect(retried).toMatchObject({ status: 'agreed', round: 1 });
+    expect(fresh.runner.calls[0]?.prompt).toContain('Use tabs?');
+    expect((await fresh.read(retried.transcriptPath)).match(/— Claude/g)).toHaveLength(1);
+  });
+});
+
+describe('orphan transcripts', () => {
+  it('does not reuse the id of an orphan transcript', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tagteam-orphan-'));
+    await new Transcript(dir).append('2026-10-16-use-tabs', 'orphan\n');
+    const { referee } = await setup([object('A')], dir);
+    expect((await referee.open(open)).id).toBe('2026-10-16-use-tabs-2');
+  });
+});
+
+describe('pinned round limit', () => {
+  it('keeps the limit the debate opened with', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tagteam-pin-'));
+    const first = await setup([object('A')], dir);
+    const { id } = await first.referee.open(open);
+    const store = new Store(dir);
+    const later = new Referee({
+      runner: new FakeRunner([object('B'), object('C')]),
+      store,
+      transcript: new Transcript(dir),
+      config: { ...DEFAULT_CONFIG, maxRounds: 5 },
+      now: () => NOW,
+    });
+    await later.reply(id, 'r2');
+    const last = await later.reply(id, 'r3');
+    expect(last).toMatchObject({ status: 'escalated', round: 3, maxRounds: 3 });
+  });
+});

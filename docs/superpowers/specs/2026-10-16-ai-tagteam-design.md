@@ -62,14 +62,15 @@ Claude's own pane.
 | `CodexCli` | Real `CodexRunner`: spawns `codex exec`, parses JSONL, enforces timeout and sandbox | `child_process` |
 | `Store` | Debate state in `.tagteam/state/<id>.json` (gitignored) | `fs` |
 | `Transcript` | Appends rendered turns to `docs/debates/YYYY-MM-DD-<slug>.md` | `fs` |
-| `Config` | Reads `.tagteam.json`: `model` (default `gpt-6.1-sol`), `checkpoints[]`, `maxRounds` (default 3), `timeoutMs` (default 300000) | `fs` |
+| `Config` | Reads `.tagteam.json`: `model` (default `gpt-6.1-sol`), `checkpoints[]`, `maxRounds` (default 3), `timeoutMs` (default 300000). Read on every tool call, so a malformed file is a tool error, not a dead server | `fs` |
 
 ## Tools exposed to Claude
 
 | Tool | Allowed when | Effect |
 |---|---|---|
 | `debate_open(topic, claude_position, files?)` | always | Creates debate, sends round 1 to ChatGPT, returns its reply verbatim with verdict and round |
-| `debate_reply(id, response)` | status `open` or `stalled` | Sends Claude's next message; returns ChatGPT's reply |
+| `debate_reply(id, response)` | status `open` only | Sends Claude's next message; returns ChatGPT's reply |
+| `debate_retry(id)` | status `stalled` only | Resends the turn that failed; Claude's message is not re-sent or re-recorded |
 | `debate_record_ruling(id, ruling)` | status `escalated` only | Records David's decision; status `ruled` |
 | `debate_status(id)` | always | Returns status, round, last verdict |
 
@@ -86,6 +87,7 @@ States: `open`, `stalled`, `agreed`, `escalated`, `ruled`.
   verbatim, side by side; Claude stops and asks David.
 - Codex failure (timeout, crash, plan limit, auth) → `stalled`. No round consumed. The
   error is passed on verbatim; an auth failure adds the `codex login --device-auth` hint.
+  `debate_retry` resends the failed turn.
 - `agreed`, `ruled` are terminal. Tool calls on them are refused.
 
 ## ChatGPT reply contract

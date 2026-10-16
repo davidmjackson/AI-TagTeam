@@ -1,0 +1,6 @@
+dist
+coverage
+vendor
+node_modules
+docs
+CLAUDE.md

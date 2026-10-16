@@ -1,0 +1,8 @@
+{
+  "threshold": 3,
+  "minLines": 5,
+  "minTokens": 50,
+  "gitignore": true,
+  "reporters": ["console"],
+  "ignore": ["**/node_modules/**", "**/coverage/**", "**/dist/**", "**/vendor/**", "docs/**"]
+}

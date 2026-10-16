@@ -1,0 +1,26 @@
+{
+  "//": "Copy this to .claude/settings.json in a consuming repo. One dispatcher handles every language; there is deliberately not one hook per stack.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/hooks/dispatch.sh post"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/hooks/dispatch.sh stop"
+          }
+        ]
+      }
+    ]
+  }
+}

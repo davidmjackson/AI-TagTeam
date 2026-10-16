@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { setTimeout } from 'node:timers';
 
@@ -12,6 +13,7 @@ process.stdin.on('data', (chunk) => {
 
 process.stdin.on('end', () => {
   if (mode === 'hang') {
+    spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'inherit' });
     setTimeout(() => {}, 60_000);
     return;
   }
@@ -28,6 +30,10 @@ process.stdin.on('end', () => {
   if (mode === 'crash') {
     process.stderr.write('boom\n');
     process.exit(2);
+  }
+  if (mode === 'empty') {
+    emit({ type: 'item.completed', item: { type: 'agent_message', text: '' } });
+    process.exit(0);
   }
   const echo = JSON.stringify({ argv: process.argv.slice(2), stdin: input });
   emit({ type: 'item.completed', item: { type: 'agent_message', text: echo } });

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { CodexError, classify } from './errors.js';
 import { parseEvents } from './events.js';
 import type { CodexReply, CodexRunner } from './runner.js';
@@ -34,28 +34,47 @@ export function buildArgs(opts: CodexCliOptions, threadId: string | null): strin
     : ['exec', 'resume', ...common, threadId, '-'];
 }
 
+function killGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // group already gone
+  }
+}
+
+function collectOutput(child: ChildProcessWithoutNullStreams, result: ProcessResult): void {
+  child.stdout.on('data', (chunk: Buffer) => {
+    result.stdout += chunk.toString();
+  });
+  child.stderr.on('data', (chunk: Buffer) => {
+    result.stderr += chunk.toString();
+  });
+}
+
 function runProcess(opts: CodexCliOptions, args: string[], input: string): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(opts.bin, args, { cwd: opts.cwd, shell: false });
+    const child = spawn(opts.bin, args, { cwd: opts.cwd, shell: false, detached: true });
     const result: ProcessResult = { stdout: '', stderr: '', code: null, timedOut: false };
+    let settled = false;
+    const settle = (finish: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finish();
+    };
     const timer = setTimeout(() => {
       result.timedOut = true;
-      child.kill('SIGKILL');
+      killGroup(child.pid);
+      settle(() => resolve({ ...result }));
     }, opts.timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => {
-      result.stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      result.stderr += chunk.toString();
-    });
+    collectOutput(child, result);
     child.stdin.on('error', () => undefined);
     child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new CodexError(`Could not start codex: ${err.message}`, 'failed'));
+      settle(() => reject(new CodexError(`Could not start codex: ${err.message}`, 'failed')));
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ ...result, code });
+      settle(() => resolve({ ...result, code }));
     });
     child.stdin.end(input);
   });
@@ -69,7 +88,7 @@ function toReply(result: ProcessResult, timeoutMs: number, knownThread: string |
   const detail = run.failure ?? exitDetail;
   if (detail !== null) throw new CodexError(detail, classify(`${detail}\n${result.stderr}`));
   const threadId = run.threadId ?? knownThread;
-  if (threadId === null || run.text === null)
+  if (threadId === null || run.text === null || run.text.trim() === '')
     throw new CodexError('codex produced no reply', 'failed');
   return { threadId, text: run.text };
 }

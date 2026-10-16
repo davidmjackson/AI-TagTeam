@@ -80,6 +80,11 @@ describe('CodexCli failures', () => {
     expect(error).toMatchObject({ kind: 'timeout' });
   });
 
+  it('treats an empty final message as no reply', async () => {
+    process.env.FAKE_CODEX_MODE = 'empty';
+    await expect(new CodexCli(options()).start('x')).rejects.toMatchObject({ kind: 'failed' });
+  });
+
   it('reports a missing binary as a failure', async () => {
     await expect(
       new CodexCli(options({ bin: '/nonexistent/codex' })).start('x'),

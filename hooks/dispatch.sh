@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Single quality-gate dispatcher for Claude Code hooks.
+# Single quality-gate dispatcher for Claude Code hooks and CI.
 #
 #   dispatch.sh post   # PostToolUse: format + lint the one edited file
-#   dispatch.sh stop   # Stop: run the full gate over the whole repo
+#   dispatch.sh stop   # Stop or CI: run the full gate over the whole repo
 #   dispatch.sh budget # Stop: the CLAUDE.md byte budget ALONE, nothing else
 #
 # post mode reads the hook JSON on stdin (or takes a path as $2 for testing)
@@ -12,15 +12,44 @@
 #   .ts .tsx .js .jsx      -> Prettier + ESLint
 #   .py                    -> Ruff format + Ruff check
 #
-# It exits non-zero on any violation so the feedback reaches the agent.
+# Exit 2 is the only code whose stderr Claude Code passes to the agent, so every
+# failure uses it. A required tool that is missing is a failure, never a skip.
 # One dispatcher, one settings entry - never one hook per language.
 set -uo pipefail
 
 MODE="${1:-post}"
 ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
+# The enforcement points for T5 and T7 in Python, where no analyzer rule carries
+# them. core/THRESHOLDS.md holds the definitions.
+MODULE_MAX_LINES=400
+COVERAGE_MIN=80
+OUTPUT_TAIL_LINES=40
+
+GATE_FAILED=0
+
+[ -d "$ROOT/.venv/bin" ] && PATH="$ROOT/.venv/bin:$PATH"
+
 log()  { printf '[quality] %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+require() {
+  have "$1" && return 0
+  log "$1 is required but not on PATH."
+  GATE_FAILED=1
+  return 1
+}
+
+# check <label> <command...>: on failure, show the tool's output and mark red.
+check() {
+  local label="$1" output
+  shift
+  output="$("$@" 2>&1)" && return 0
+  log "$label failed:"
+  printf '%s\n' "$output" | tail -n "$OUTPUT_TAIL_LINES" >&2
+  GATE_FAILED=1
+  return 1
+}
 
 # Walk up from $1 looking for the first directory that contains a match of $2.
 find_up() {
@@ -37,68 +66,64 @@ find_up() {
 
 lint_csharp() {
   local file="$1" projdir
-  have dotnet || { log "dotnet not found; skipping $file"; return 0; }
+  require dotnet || return 1
   projdir="$(find_up "$(dirname "$file")" '*.csproj')" || { log "no .csproj above $file"; return 0; }
   local proj rel
   proj="$(basename "$(compgen -G "$projdir/"'*.csproj' | head -1)")"
   rel="$(realpath --relative-to="$projdir" "$file")"
   # Relative paths only: a leading-slash absolute path is read as an MSBuild switch.
-  ( cd "$projdir" && dotnet format "$proj" --include "$rel" >/dev/null 2>&1 || true
-    dotnet build "$proj" -clp:ErrorsOnly >/dev/null 2>&1 )
+  ( cd "$projdir" && dotnet format "$proj" --include "$rel" &&
+    dotnet build "$proj" -clp:ErrorsOnly )
 }
 
 lint_js() {
   local file="$1" dir; dir="$(dirname "$file")"
-  have npx || { log "npx not found; skipping $file"; return 0; }
-  npx prettier --write "$file" >/dev/null 2>&1 || true
-  ( cd "$dir" && npx eslint "$file" )
+  require npx || return 1
+  npx --no -- prettier --write "$file" && ( cd "$dir" && npx --no -- eslint "$file" )
 }
 
 lint_python() {
   local file="$1"
-  have ruff || { log "ruff not found; skipping $file"; return 0; }
-  ruff format "$file" >/dev/null 2>&1 || true
-  ruff check "$file"
+  require ruff || return 1
+  ruff format "$file" && ruff check "$file"
+}
+
+edited_file() {
+  require python3 || return 1
+  python3 -c 'import sys,json
+print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))'
+}
+
+lint_file() {
+  local file="$1"
+  case "$file" in
+    *.cs)                  lint_csharp "$file" ;;
+    *.ts|*.tsx|*.js|*.jsx) lint_js "$file" ;;
+    *.py)                  lint_python "$file" ;;
+    *) return 0 ;;
+  esac
 }
 
 run_post() {
-  local file="${1:-}"
+  local file="${1:-}" output
   if [ -z "$file" ]; then
-    file="$(python3 -c 'import sys,json
-try:
-    d=json.load(sys.stdin)
-except Exception:
-    d={}
-print(d.get("tool_input",{}).get("file_path",""))' 2>/dev/null)"
+    file="$(edited_file)" || { log "cannot read the hook input."; exit 2; }
   fi
   [ -n "$file" ] && [ -f "$file" ] || exit 0
-  case "$file" in
-    *.cs)                 lint_csharp "$file" ;;
-    *.ts|*.tsx|*.js|*.jsx) lint_js "$file" ;;
-    *.py)                 lint_python "$file" ;;
-    *) exit 0 ;;
-  esac
+  file="$(realpath "$file")" || { log "cannot resolve $file."; exit 2; }
+  output="$(lint_file "$file" 2>&1)" && exit 0
+  log "$file failed the gate:"
+  printf '%s\n' "$output" | tail -n "$OUTPUT_TAIL_LINES" >&2
+  exit 2
 }
 
 # ---- CLAUDE.md byte budget (stop mode) ------------------------------------
 
-# The ceiling from core/MEMORY-BUDGET.md, which holds the reasoning. The number
-# is literal HERE because this is the enforcement point, and a gate cannot
-# compare against prose (STANDARD.md principle 2). Same shape as T5 for Python:
-# documented in one place, checked in one place.
+# The ceiling from core/MEMORY-BUDGET.md, which holds the reasoning.
 CLAUDE_MD_CEILING=12288
 
-# WARNS. Deliberately does not set failed=1.
-#
-# These are working targets, not platform limits - Claude Code has no hard cap on
-# CLAUDE.md - so a red gate here would block real work over a self-imposed number,
-# which is the two-fighting-constraints mistake MEMORY-BUDGET.md already records.
-# The gap it closes is a different one: measured 2026-08-25, sprintboard's
-# CLAUDE.md had reached 75,118 B (6.3x this ceiling) with NOTHING printing at any
-# point, because only MEMORY.md warns in session. A budget with no trigger is a
-# preference. This is the trigger.
-#
-# Flip to failed=1 if the warning stops being read.
+# WARNS, deliberately. These are working targets, not platform limits, so a red
+# gate would block real work over a self-imposed number.
 check_claude_md_budget() {
   [ -f CLAUDE.md ] || return 0
   local bytes; bytes="$(wc -c < CLAUDE.md | tr -d ' ')"
@@ -110,47 +135,111 @@ check_claude_md_budget() {
 
 # ---- full gate (stop mode) -------------------------------------------------
 
+has_csharp() {
+  [ -n "$(find . \( -name '*.csproj' -o -name '*.sln' \) -not -path '*/.*' \
+    -not -path '*/node_modules/*' -print -quit)" ]
+}
+
+gate_csharp() {
+  log "C#: build (analyzers) + test"
+  require dotnet || return 0
+  check "C# build/analyzers" dotnet build -clp:ErrorsOnly
+  check "C# tests/coverage" dotnet test --no-build
+}
+
+# The repo's own verify script is the whole JS/TS gate, so CI and this hook
+# cannot disagree. It owns tests, coverage and duplication.
+gate_js() {
+  log "JS/TS: npm run verify"
+  if ! grep -Eq '"verify"[[:space:]]*:' package.json; then
+    log "package.json has no verify script. See skill/scaffold-standards/SKILL.md."
+    GATE_FAILED=1
+    return 0
+  fi
+  require npm && check "npm run verify" npm run --silent verify
+}
+
+python_modules() {
+  find . -name '*.py' -not -path '*/.*' -not -path '*/node_modules/*' \
+    -not -path '*/venv/*' -not -path '*/__pycache__/*'
+}
+
+check_module_length() {
+  local module
+  while IFS= read -r module; do
+    [ "$(wc -l < "$module")" -le "$MODULE_MAX_LINES" ] && continue
+    log "$module is over the $MODULE_MAX_LINES line limit."
+    GATE_FAILED=1
+  done < <(python_modules)
+}
+
+# pytest when installed; otherwise unittest, which errors on a pytest-only suite
+# because it discovers no tests.
+check_python_tests() {
+  local runner=(-m unittest discover -s tests)
+  require coverage || return 0
+  have pytest && runner=(-m pytest)
+  check "Python tests" coverage run "${runner[@]}" &&
+    check "Python coverage" coverage report --fail-under="$COVERAGE_MIN"
+}
+
+gate_python() {
+  log "Python: ruff + tests + coverage + module length"
+  if require ruff; then
+    check "Ruff check" ruff check .
+    check "Ruff format" ruff format --check .
+  fi
+  check_python_tests
+  check_module_length
+}
+
+gate_duplication() {
+  log "Duplication: jscpd"
+  require npx && check "Duplication" npx --yes jscpd@4.0.5 . --threshold 3 --gitignore \
+    --ignore '**/.venv/**,**/venv/**,**/node_modules/**'
+}
+
+# True when Claude Code is re-running Stop after this gate already blocked once.
+is_stop_retry() {
+  [ -t 0 ] && return 1
+  timeout 1 cat | grep -Eq '"stop_hook_active"[[:space:]]*:[[:space:]]*true'
+}
+
+# Claude Code treats exit 2 as non-blocking when stdout is empty and stderr mentions
+# a missing file, so a red gate always writes to both. Exit 2 rather than JSON
+# because the same command must fail CI.
+block_stop() {
+  log "$1"
+  printf '[quality] %s\n' "$1"
+  exit 2
+}
+
 run_full_gate() {
-  local failed=0
-  cd "$ROOT" || exit 0
+  local retry=0
+  is_stop_retry && retry=1
+  cd "$ROOT" || block_stop "cannot enter $ROOT"
 
   check_claude_md_budget
+  has_csharp && gate_csharp
+  [ -f package.json ] && gate_js
+  { [ -f ruff.toml ] || [ -f pyproject.toml ]; } && gate_python
+  [ -f package.json ] || gate_duplication
 
-  if compgen -G "**/*.csproj" >/dev/null 2>&1 || compgen -G "*.sln" >/dev/null 2>&1; then
-    log "C#: build (analyzers) + test"
-    dotnet build -clp:ErrorsOnly >/dev/null 2>&1 || { log "C# build/analyzers failed"; failed=1; }
-    dotnet test  --no-build >/dev/null 2>&1 || { log "C# tests/coverage failed"; failed=1; }
+  if [ "$GATE_FAILED" -eq 0 ]; then
+    log "Full gate green."
+    exit 0
   fi
-
-  if [ -f package.json ]; then
-    log "JS/TS: eslint + prettier + tests"
-    have npx && { npx eslint . >/dev/null 2>&1 || { log "ESLint failed"; failed=1; }; }
-    have npx && { npx prettier --check . >/dev/null 2>&1 || { log "Prettier failed"; failed=1; }; }
-    grep -q '"test"' package.json && { npm test --silent >/dev/null 2>&1 || { log "JS tests failed"; failed=1; }; }
-  fi
-
-  if [ -f ruff.toml ] || [ -f pyproject.toml ]; then
-    log "Python: ruff + coverage"
-    have ruff && { ruff check . >/dev/null 2>&1 || { log "Ruff check failed"; failed=1; }; }
-    have ruff && { ruff format --check . >/dev/null 2>&1 || { log "Ruff format failed"; failed=1; }; }
-  fi
-
-  log "Duplication: jscpd"
-  have npx && { npx --yes jscpd@4.0.5 . --threshold 3 --gitignore >/dev/null 2>&1 || { log "Duplication over 3%"; failed=1; }; }
-
-  if [ "$failed" -ne 0 ]; then
-    log "FULL GATE RED - fix the above before proceeding."
-    exit 2
-  fi
-  log "Full gate green."
+  # Exit 2 on a retry would block Stop again, and a gate the agent cannot turn
+  # green would then loop forever. Exit 1 ends the turn with the failure shown.
+  [ "$retry" -eq 1 ] && { log "FULL GATE RED."; exit 1; }
+  block_stop "FULL GATE RED - fix the above before proceeding."
 }
 
 case "$MODE" in
   stop) run_full_gate ;;
-  # A repo whose gate is its own `npm run verify` wires THIS, not `stop`: the full
-  # gate would re-impose tooling that repo has deliberately removed, and would run
-  # its live suites on every Stop. Warns only; never sets a failing exit.
+  # A repo whose gate is its own `npm run verify` wires THIS, not `stop`, when
+  # that gate is too slow for every Stop. Warns only; never sets a failing exit.
   budget) check_claude_md_budget ;;
   post) shift || true; run_post "${1:-}" ;;
-  *) log "unknown mode: $MODE"; exit 0 ;;
+  *) log "unknown mode: $MODE"; exit 2 ;;
 esac
